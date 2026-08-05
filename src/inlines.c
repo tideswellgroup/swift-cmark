@@ -1964,11 +1964,11 @@ int cmark_inline_parser_scan_delimiters(cmark_inline_parser *parser,
                                   int *punct_before,
                                   int *punct_after) {
   int numdelims = 0;
-  bufsize_t before_char_pos;
+  bufsize_t before_char_pos, before_before_char_pos;
   int32_t after_char = 0;
   int32_t before_char = 0;
+  int32_t before_before_char = 0;
   int len;
-  bool space_before, space_after;
 
   if (parser->pos == 0) {
     before_char = 10;
@@ -1983,6 +1983,22 @@ int cmark_inline_parser_scan_delimiters(cmark_inline_parser *parser,
     if (len == -1) {
       before_char = 10;
     }
+
+    if (before_char_pos == 0) {
+      before_before_char = 10;
+    } else {
+      before_before_char_pos = before_char_pos - 1;
+      // walk back to the beginning of the previous UTF-8 sequence again:
+      while (peek_at(parser, before_before_char_pos) >> 6 == 2 && before_before_char_pos > 0) {
+        before_before_char_pos -= 1;
+      }
+      len = cmark_utf8proc_iterate(parser->input.data + before_before_char_pos,
+                                   parser->pos - before_before_char_pos,
+                                   &before_before_char);
+      if (len == -1) {
+        before_before_char = 10;
+      }
+    }
   }
 
   while (peek_char(parser) == c && numdelims < max_delims) {
@@ -1996,15 +2012,33 @@ int cmark_inline_parser_scan_delimiters(cmark_inline_parser *parser,
     after_char = 10;
   }
 
+  // The out-params keep their historical meaning (general Unicode
+  // punctuation); extension gates that consume them are unchanged.
   *punct_before = cmark_utf8proc_is_punctuation(before_char);
   *punct_after = cmark_utf8proc_is_punctuation(after_char);
-  space_before = cmark_utf8proc_is_space(before_char) != 0;
-  space_after = cmark_utf8proc_is_space(after_char) != 0;
 
+  // Flanking mirrors scan_delims above per the cjk-friendly amendment
+  // (tats-u/markdown-cjk-friendly): CJK characters and variation
+  // selectors stop blocking, CJK punctuation stops counting as
+  // punctuation. Extensions (strikethrough) consume only these two
+  // flags, so the same amendment has to land in this scanner too or
+  // ~~ around CJK punctuation stays broken while ** works.
   *left_flanking = numdelims > 0 && !cmark_utf8proc_is_space(after_char) &&
-                  !(*punct_after && !space_before && !*punct_before);
+                  (!cmark_utf8proc_is_non_cjk_punctuation_character(after_char) ||
+                   cmark_utf8proc_is_space(before_char) ||
+                   cmark_utf8proc_is_non_cjk_punctuation_character(before_char) ||
+                   cmark_utf8proc_is_cjk_character(before_char) ||
+                   cmark_utf8proc_is_ideographic_variation_selector(before_char) ||
+                   (cmark_utf8proc_is_non_emoji_general_use_variation_selector(before_char) &&
+                    (cmark_utf8proc_is_cjk_character(before_before_char) ||
+                     cmark_utf8proc_is_non_cjk_punctuation_character(before_before_char))));
   *right_flanking = numdelims > 0 && !cmark_utf8proc_is_space(before_char) &&
-                  !(*punct_before && !space_after && !*punct_after);
+                   (!(cmark_utf8proc_is_non_cjk_punctuation_character(before_char) ||
+                      (cmark_utf8proc_is_non_emoji_general_use_variation_selector(before_char) &&
+                       cmark_utf8proc_is_non_cjk_punctuation_character(before_before_char))) ||
+                    cmark_utf8proc_is_space(after_char) ||
+                    cmark_utf8proc_is_non_cjk_punctuation_character(after_char) ||
+                    cmark_utf8proc_is_cjk_character(after_char));
 
   return numdelims;
 }
