@@ -84,16 +84,37 @@ static cmark_node *open_tasklist_item(cmark_syntax_extension *self,
     return NULL;
   }
 
-  bufsize_t matched = scan_tasklist(input, len, 0);
-  if (!matched) {
+  // The marker is read where the item's content starts, not at column 0 of
+  // the line, so an item behind a container prefix (`> - [ ] a`, or the
+  // inner item of `- - [ ] a`) is a task too. The item must have opened on
+  // this line and be empty: a marker on a later line is paragraph text.
+  if (indented || cmark_node_first_child(parent_container) != NULL ||
+      cmark_node_get_start_line(parent_container) !=
+          cmark_parser_get_line_number(parser)) {
+    return NULL;
+  }
+  int pos = cmark_parser_get_first_nonspace(parser);
+  if (pos + 3 >= len || input[pos] != '[' || input[pos + 2] != ']') {
+    return NULL;
+  }
+  unsigned char state = input[pos + 1];
+  if (state != ' ' && state != 'x' && state != 'X') {
+    return NULL;
+  }
+  // At least one space or tab must follow, as the column-0 scanner's
+  // `spacechar+` required; a line ending alone does not count, so `- [ ]`
+  // by itself stays text.
+  unsigned char after = input[pos + 3];
+  if (after != ' ' && after != '\t' && after != '\v' && after != '\f') {
     return NULL;
   }
 
   cmark_node_set_syntax_extension(parent_container, self);
-  cmark_parser_advance_offset(parser, (char *)input, 3, false);
+  cmark_parser_advance_offset(parser, (char *)input,
+                              pos + 3 - cmark_parser_get_offset(parser), false);
 
-  // Either an upper or lower case X means the task is completed.
-  parent_container->as.list.checked = (strstr((char*)input, "[x]") || strstr((char*)input, "[X]"));
+  // The state is the marker's own character, never a `[x]` later on the line.
+  parent_container->as.list.checked = (state == 'x' || state == 'X');
 
   return NULL;
 }
